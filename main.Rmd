@@ -1,0 +1,311 @@
+---
+title: "main"
+output: html_document
+---
+
+Follow this script to access the curated data for the final project.  
+The data for tumor tissues were obtained from the TCGA project, while those for non-diseased tissue sites were obtained from the GTEx project.  
+Each tissue type (normal or tumor) has its data saved separately as ".rds" files. These ".rds" files include gene expression (raw gene counts and normalized gene expression), clinical information, and gene annotation details.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Load packages
+```{r message=FALSE}
+library(SummarizedExperiment)
+library(tidyverse)
+library(ggplot2)
+library(DESeq2)
+library(pheatmap)
+# Set seed for reproducability
+set.seed(1) 
+```
+
+## Load data
+```{r}
+list.files("data")
+luad_obj <- readRDS("data/tcga_luad.rds")
+lusc_obj <- readRDS("data/tcga_lusc.rds")
+```
+## Extract the matrix
+```{r}
+luad_counts <- assay(luad_obj)
+lusc_counts <- assay(lusc_obj)
+```
+
+## Combine the matrix according to gene
+```{r}
+common_genes <- intersect(rownames(luad_counts), rownames(lusc_counts))
+
+luad_counts <- luad_counts[common_genes, ]
+lusc_counts <- lusc_counts[common_genes, ]
+
+combined_counts <- cbind(luad_counts, lusc_counts)
+```
+
+## Filter out lowly expressed genes 
+```{r}
+keep <- rowSums(combined_counts >= 10) >= (0.2 * ncol(combined_counts))
+filtered_counts <- combined_counts[keep, ]
+```
+
+## Prepare metadata for DESeq2 Nomalization
+```{r}
+sample_type <- c(rep("LUAD", ncol(luad_counts)),
+                 rep("LUSC", ncol(lusc_counts)))
+
+coldata <- data.frame(
+  Type = factor(sample_type),
+  row.names = colnames(combined_counts)
+)
+```
+
+## Perform DESeq2 Normalization
+```{r}
+dds <- DESeqDataSetFromMatrix(
+  countData = filtered_counts,
+  colData = coldata,
+  design = ~ Type
+)
+
+dds_pca <- estimateSizeFactors(dds)
+norm_counts <- counts(dds_pca, normalized = TRUE)
+```
+
+## Variance stablization transform for PCA
+```{r}
+vsd <- vst(dds_pca, blind = TRUE)
+mat <- assay(vsd)
+```
+
+## Perform PCA for all genes (Take long time, so commented out)
+```{r}
+ pca_res <- prcomp(t(mat), scale. = TRUE)
+ pca_df <- as.data.frame(pca_res$x[, 1:2])
+pca_df$Type <- coldata$Type
+# 
+ggplot(pca_df, aes(PC1, PC2, color = Type)) +
+geom_point(size = 1.5, alpha = 0.8) +
+theme_minimal(base_size = 16) +
+labs(title = "PCA of TCGA LUAD vs LUSC (Filtered, Normalized)",
+  x = paste0("PC1"),
+  y = paste0("PC2"))
+```
+
+Using Kmeans to identify clusters
+```{r}
+km_res <- kmeans(pca_df[, c("PC1", "PC2")], centers = 2, nstart = 25)
+```
+
+Visualize the Kmeans clusters.
+```{r}
+pca_df$KmeansCluster <- factor(km_res$cluster)
+ggplot(pca_df, aes(PC1, PC2, color = KmeansCluster)) +
+   geom_point(size = 1.5, alpha = 0.8) +
+   theme_minimal(base_size = 16) +
+   labs(title = "K-means Clustering (k = 2) on PCA",
+        color = "Cluster")
+```
+## Perform PCA for 500 most variable genes
+```{r}
+# compute variance per gene
+vars <- apply(mat, 1, var)
+
+# select top 500
+top500 <- names(sort(vars, decreasing = TRUE))[1:500]
+
+pca_res <- prcomp(t(mat[top500, ]), scale. = TRUE)
+pca_df <- as.data.frame(pca_res$x[, 1:2])
+pca_df$Type <- coldata$Type
+
+ggplot(pca_df, aes(PC1, PC2, color = Type)) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  theme_minimal(base_size = 16) +
+  labs(title = "PCA of TCGA LUAD vs LUSC (Filtered, Normalized)",
+       x = paste0("PC1"),
+       y = paste0("PC2"))
+```
+
+Using Kmeans to identify clusters
+```{r}
+km_res <- kmeans(pca_df[, c("PC1", "PC2")], centers = 2, nstart = 25)
+```
+
+Visualize the Kmeans clusters.
+```{r}
+pca_df$KmeansCluster <- factor(km_res$cluster)
+ggplot(pca_df, aes(PC1, PC2, color = KmeansCluster)) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  theme_minimal(base_size = 16) +
+  labs(title = "K-means Clustering (k = 2) on PCA",
+       color = "Cluster")
+```
+
+# Calculating fold change and p-value of genes using DESeq2 (Notice, following three chunks are commented out for not repeat)
+```{r}
+dds <- DESeq(dds)
+res <- results(dds)
+res <- res[order(res$padj), ]
+head(as.data.frame(res), 10)
+```
+
+# Identify differentially expressed genes based on DESeq2 result
+```{r}
+deg <- as.data.frame(res) %>%
+  dplyr::filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) > 1)
+```
+res has 35997 genes, after filtering, left 6903 genes.
+
+# Save the differentially expressed gene results to processed_data folder
+```{r}
+write.csv(as.data.frame(res), "processed_data/DESeq2_all_genes_LUAD_vs_LUSC.csv")
+write.csv(deg, "processed_data/DESeq2_DEGs_LUAD_vs_LUSC_filtered.csv")
+```
+
+# Read in all differentially expressed gene results dataframe
+```{r}
+all_deg <- read.csv("processed_data/DESeq2_all_genes_LUAD_vs_LUSC.csv")
+rownames(all_deg) <- all_deg$X
+all_deg <- all_deg[, -1]
+
+deg <- read.csv("processed_data/DESeq2_DEGs_LUAD_vs_LUSC_filtered.csv")
+rownames(deg) <- deg$X
+deg <- deg[, -1]
+```
+
+# Volcano plot
+```{r}
+ggplot(all_deg, aes(log2FoldChange, -log10(padj))) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Volcano Plot: LUAD vs LUSC")
+```
+The points at the top of the plots should be those with p-value of 0 (very significant DE genes).
+
+# Heatmap of top 50 DEG
+```{r}
+top50 <- rownames(all_deg)[1:50]
+top50 <- top50[top50 %in% rownames(mat)]
+
+heatmap_data <- mat[top50, ]
+
+luad_samples <- rownames(coldata)[coldata$Type == "LUAD"]
+lusc_samples <- rownames(coldata)[coldata$Type == "LUSC"]
+
+sel_luad <- sample(luad_samples, 10)
+sel_lusc <- sample(lusc_samples, 10)
+
+sel_samples <- c(sel_luad, sel_lusc)
+
+heatmap_data_sub <- heatmap_data[, sel_samples]
+annotation_sub <- coldata[sel_samples, , drop = FALSE]
+
+pheatmap(
+  heatmap_data_sub,
+  annotation_col = annotation_sub,  
+  show_colnames = FALSE,             
+  show_rownames = TRUE,
+  fontsize_row = 4,
+  main = "Top 50 DEGs in 10 LUAD vs 10 LUSC samples",
+)
+```
+
+# PCA based on the DEG
+```{r}
+# Get DEG gene names
+deg_genes <- rownames(deg)
+deg_genes <- intersect(deg_genes, rownames(mat))
+
+mat_deg <- mat[deg_genes, ]
+
+pca_deg <- prcomp(t(mat_deg), scale. = TRUE)
+
+pca_deg_df <- as.data.frame(pca_deg$x[, 1:2])
+pca_deg_df$Type <- coldata$Type
+
+ggplot(pca_deg_df, aes(PC1, PC2, color = Type)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "PCA Using Only DE Genes (LUAD vs LUSC)",
+    x = "PC1",
+    y = "PC2"
+  )
+```
+
+# Still, perform clustering using Kmeans (k=2)
+```{r}
+km_deg <- kmeans(pca_deg_df[, c("PC1", "PC2")], centers = 2, nstart = 25)
+
+pca_deg_df$KmeansCluster <- factor(km_deg$cluster)
+
+ggplot(pca_deg_df, aes(PC1, PC2, color = KmeansCluster)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "K-means Clustering (k = 2) on PCA of DE Genes",
+    color = "Cluster"
+  )
+```
+
+# Check how well the clusters identify the cell types
+```{r}
+tab <- table(TrueType = pca_deg_df$Type,
+             Cluster = pca_deg_df$KmeansCluster)
+tab
+```
+
+# Quantify the accuracy
+```{r}
+# accuracy if Cluster 1 = LUAD, Cluster 2 = LUSC
+acc1 <- (tab["LUAD","1"] + tab["LUSC","2"]) / sum(tab)
+
+# accuracy if Cluster 1 = LUSC, Cluster 2 = LUAD
+acc2 <- (tab["LUSC","1"] + tab["LUAD","2"]) / sum(tab)
+
+accuracy <- max(acc1, acc2)
+accuracy
+```
+So 94.47% of cells are correctly identified, pretty accurate.
+
+# Work on GSEA from here
+
+
+
+
+# PANDA Preprocessing
+```{r}
+# Split normalized expression by cancer type
+expr_luad <- norm_counts[, coldata$Type == "LUAD"]
+expr_lusc <- norm_counts[, coldata$Type == "LUSC"]
+
+# Remove version numbers if present
+rownames(expr_luad) <- sub("\\..*", "", rownames(expr_luad))
+rownames(expr_lusc) <- sub("\\..*", "", rownames(expr_lusc))
+
+# Log-transform for PANDA
+expr_luad_log <- log2(expr_luad + 1)
+expr_lusc_log <- log2(expr_lusc + 1)
+
+# Export to text files
+write.table(
+  data.frame(Gene = rownames(expr_luad_log), expr_luad_log, check.names = FALSE),
+  "processed_data/expression_LUAD_noVersion.txt",
+  sep = "\t", quote = FALSE, row.names = FALSE
+)
+
+write.table(
+  data.frame(Gene = rownames(expr_lusc_log), expr_lusc_log, check.names = FALSE),
+  "processed_data/expression_LUSC_noVersion.txt",
+  sep = "\t", quote = FALSE, row.names = FALSE
+)
+```
+
+
+
+
+
