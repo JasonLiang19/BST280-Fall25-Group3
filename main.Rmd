@@ -19,6 +19,12 @@ library(tidyverse)
 library(ggplot2)
 library(DESeq2)
 library(pheatmap)
+library(fgsea)
+library(msigdbr)
+library(data.table)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(biomaRt)
 # Set seed for reproducability
 set.seed(1) 
 ```
@@ -305,6 +311,67 @@ write.table(
 )
 ```
 
+# GSEA on PANDA output 
+```{r}
+# pathways file
+gmt.file <- "c2.cp.kegg.v7.0.symbols.gmt"
+pathways <- gmtPathways(gmt.file)
+
+# load gene rankings 
+degreeDiff_all <- read.delim("LUAD_LUSC_indegreeDifference.rnk",stringsAsFactors = F,header=F)
+degreeDiff_all <- setNames(degreeDiff_all[,2], degreeDiff_all[,1])
+
+# make table for mapping
+degreeDiff_dt <- data.table(
+  gene_ensg = names(degreeDiff_all),
+  score   = unname(degreeDiff_all)
+)
+
+# map ensembl ids to HGNC #
+mart <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl", mirror = "useast")
+map <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters    = "ensembl_gene_id",
+  values     = unique(degreeDiff_dt$gene_ensg),
+  mart       = mart
+)
+map <- as.data.table(map)
+setnames(map, c("ensembl_gene_id", "hgnc_symbol"), c("gene_ensg", "SYMBOL"))
+
+# check for duplicates and NAs 
+sum(is.na(map$SYMBOL) | map$SYMBOL == "")
+sum(duplicated(map$gene_ensg))
+map <- map[!is.na(SYMBOL) & SYMBOL != ""]
+
+# merge mapping into vector
+degreeDiff_dt <- merge(degreeDiff_dt, map, by = "gene_ensg", all.x = TRUE)
+degreeDiff_dt <- degreeDiff_dt[!is.na(SYMBOL) & SYMBOL != ""]
+degreeDiff_mapped <- degreeDiff_dt$score
+names(degreeDiff_mapped) <- degreeDiff_dt$SYMBOL
+
+# for duplicates, take max
+collapse_maxabs <- function(x) x[which.max(abs(x))]
+degreeDiff_mapped <- tapply(
+  degreeDiff_mapped,
+  names(degreeDiff_mapped),
+  collapse_maxabs
+)
+stats <- sort(stats, decreasing = TRUE)
+
+
+fgseaRes <- fgsea(pathways, degreeDiff_mapped, minSize=15, maxSize=500)
+head(fgseaRes)
+# Subset to pathways with FDR < 0.05
+sig <- fgseaRes[fgseaRes$padj < 0.05,]
+
+# pathways more expressed in LUSC 
+sig[order(sig$NES)[1:10],]
+
+# LUAD-enriched pathways
+sig[order(-sig$NES)[1:10],]
+
+
+```
 
 
 
