@@ -315,7 +315,8 @@ write.table(
 ```{r}
 # pathways file
 gmt.file <- "c2.cp.kegg.v7.0.symbols.gmt"
-pathways <- gmtPathways(gmt.file)
+kegg_pathways <- gmtPathways(gmt.file)
+gobp_pathways <- gmtPathways("c5.go.bp.v2025.1.Hs.symbols.gmt")
 
 # load gene rankings 
 degreeDiff_all <- read.delim("LUAD_LUSC_indegreeDifference.rnk",stringsAsFactors = F,header=F)
@@ -356,23 +357,130 @@ degreeDiff_mapped <- tapply(
   names(degreeDiff_mapped),
   collapse_maxabs
 )
-stats <- sort(stats, decreasing = TRUE)
+degreeDiff_mapped <- sort(degreeDiff_mapped, decreasing = TRUE)
 
+# kegg
+fgseaRes_kegg <- fgsea(kegg_pathways, degreeDiff_mapped, minSize=15, maxSize=500)
 
-fgseaRes <- fgsea(pathways, degreeDiff_mapped, minSize=15, maxSize=500)
-head(fgseaRes)
 # Subset to pathways with FDR < 0.05
-sig <- fgseaRes[fgseaRes$padj < 0.05,]
+sig_kegg <- fgseaRes_kegg[fgseaRes_kegg$padj < 0.05,]
 
 # pathways more expressed in LUSC 
-sig[order(sig$NES)[1:10],]
+sig_kegg[order(sig_kegg$NES)[1:10],]
 
 # LUAD-enriched pathways
-sig[order(-sig$NES)[1:10],]
+sig_kegg[order(-sig_kegg$NES)[1:10],]
+```
+```{r}
+# go BP GSEA
+fgseaRes_gobp <- fgsea(gobp_pathways, degreeDiff_mapped, minSize=15, maxSize=500)
 
+# Subset to pathways with FDR < 0.05
+sig_gobp <- fgseaRes_gobp[fgseaRes_gobp$padj < 0.05,]
 
+# pathways more expressed in LUSC 
+sig_gobp[order(sig_gobp$NES)[1:10],]
+
+# LUAD-enriched pathways
+sig_gobp[order(-sig_gobp$NES)[1:10],]
 ```
 
+```{r}
+# KEGG visualization
+# from netzoo documentation 
+dat <- data.frame(fgseaRes_kegg)
+
+# Settings
+fdrcut <- 0.05 # FDR cut-off to use as output for significant signatures
+dencol_neg <- "blue" # bubble plot color for negative ES
+dencol_pos <- "red" # bubble plot color for positive ES
+signnamelength <- 4 # set to remove prefix from signature names (2 for "GO", 4 for "KEGG", 8 for "REACTOME")
+asp <- 3 # aspect ratio of bubble plot
+charcut <- 100 # cut signature name in heatmap to this nr of characters
+
+# Make signature names more readable
+a <- as.character(dat$pathway) # 'a' is a great variable name to substitute row names with something more readable
+for (j in 1:length(a)){
+  a[j] <- substr(a[j], signnamelength+2, nchar(a[j]))
+}
+a <- tolower(a) # convert to lower case (you may want to comment this out, it really depends on what signatures you are looking at, c6 signatures contain gene names, and converting those to lower case may be confusing)
+for (j in 1:length(a)){
+  if(nchar(a[j])>charcut) { a[j] <- paste(substr(a[j], 1, charcut), "...", sep=" ")}
+} # cut signature names that have more characters than charcut, and add "..."
+a <- gsub("_", " ", a)
+dat$NAME <- a
+
+# Determine what signatures to plot (based on FDR cut)
+dat2 <- dat[dat[,"padj"]<fdrcut,]
+dat2 <- dat2[order(dat2[,"padj"]),] 
+dat2$signature <- factor(dat2$NAME, rev(as.character(dat2$NAME)))
+# Determine what labels to color
+sign_neg <- which(dat2[,"NES"]<0)
+sign_pos <- which(dat2[,"NES"]>0)
+# Color labels
+signcol <- rep(NA, length(dat2$signature))
+signcol[sign_neg] <- dencol_neg # text color of negative signatures
+signcol[sign_pos] <- dencol_pos # text color of positive signatures
+signcol <- rev(signcol) # need to revert vector of colors, because ggplot starts plotting these from below
+
+# Plot bubble plot
+g<-ggplot(dat2, aes(x=padj,y=signature,size=size))
+g+geom_point(aes(fill=NES), shape=21, colour="white")+
+  theme_bw()+ # white background, needs to be placed before the "signcol" line
+  xlim(0,fdrcut)+
+  scale_size_area(max_size=10,guide="none")+
+  scale_fill_gradient2(low=dencol_neg, high=dencol_pos)+
+  theme(axis.text.y = element_text(colour=signcol))+
+  theme(aspect.ratio=asp, axis.title.y=element_blank()) # test aspect.ratio
+```
+```{r, fig.width=10, dpi=600}
+# GOBP visualization
+# from netzoo documentation 
+dat <- data.frame(fgseaRes_gobp)
+
+# Settings
+fdrcut <- 0.0000025 # FDR cut-off to use as output for significant signatures
+dencol_neg <- "blue" # bubble plot color for negative ES
+dencol_pos <- "red" # bubble plot color for positive ES
+signnamelength <- 4 # set to remove prefix from signature names (2 for "GO", 4 for "KEGG", 8 for "REACTOME")
+#asp <- 10 # aspect ratio of bubble plot
+charcut <- 100 # cut signature name in heatmap to this nr of characters
+
+# Make signature names more readable
+a <- as.character(dat$pathway) # 'a' is a great variable name to substitute row names with something more readable
+for (j in 1:length(a)){
+  a[j] <- substr(a[j], signnamelength+2, nchar(a[j]))
+}
+a <- tolower(a) # convert to lower case (you may want to comment this out, it really depends on what signatures you are looking at, c6 signatures contain gene names, and converting those to lower case may be confusing)
+for (j in 1:length(a)){
+  if(nchar(a[j])>charcut) { a[j] <- paste(substr(a[j], 1, charcut), "...", sep=" ")}
+} # cut signature names that have more characters than charcut, and add "..."
+a <- gsub("_", " ", a)
+dat$NAME <- a
+
+# Determine what signatures to plot (based on FDR cut)
+dat2 <- dat[dat[,"padj"]<fdrcut,]
+dat2 <- dat2[order(dat2[,"padj"]),] 
+dat2$signature <- factor(dat2$NAME, rev(as.character(dat2$NAME)))
+# Determine what labels to color
+sign_neg <- which(dat2[,"NES"]<0)
+sign_pos <- which(dat2[,"NES"]>0)
+# Color labels
+signcol <- rep(NA, length(dat2$signature))
+signcol[sign_neg] <- dencol_neg # text color of negative signatures
+signcol[sign_pos] <- dencol_pos # text color of positive signatures
+signcol <- rev(signcol) # need to revert vector of colors, because ggplot starts plotting these from below
+
+# Plot bubble plot
+g<-ggplot(dat2, aes(x=padj,y=signature,size=size))
+g+geom_point(aes(fill=NES), shape=21, colour="white")+
+  theme_bw()+ # white background, needs to be placed before the "signcol" line
+  xlim(0,fdrcut)+
+  scale_size_area(max_size=10,guide="none")+
+  scale_fill_gradient2(low=dencol_neg, high=dencol_pos)+
+  theme(axis.text.y = element_text(colour=signcol))+
+  theme(axis.title.y=element_blank()) # test aspect.ratio
+```
 
 
 
